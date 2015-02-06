@@ -45,6 +45,7 @@ public class DBConnector {
 		String wordEntered = sb.wordTextField.getText().trim();
 		String segmentEntered = sb.segmentTextField.getText().trim();
 		String targetSegment = findTargetSegment(segmentEntered);
+//		System.out.println(targetSegment);
 		if(segmentEntered.length()>0 && targetSegment.length()==0){
 			JOptionPane.showMessageDialog(null, "Segment sequence not valid. Use brackets to indicate target segment.","Error",JOptionPane.ERROR_MESSAGE);
 			return result;
@@ -59,7 +60,15 @@ public class DBConnector {
 		//Do a preliminary segment filtering here to speed up the segment search (part 1)
 		if(segmentEntered.length()>0){
 			query += "JOIN segment ON image.segment_id=segment.id ";
-		}		
+		}
+		
+		if(tag != null && tag.length()>0){
+			query += "JOIN tag ON image.id=tag.image_id "; 
+		}
+		
+		if(experimentEntered != null && experimentEntered.length()>0){
+			query += "JOIN experiment ON image.id=experiment.image_id ";
+		}
 		
 		query +="WHERE 1=1 "; //This last thing after "where" is a dummy condition
 		
@@ -85,25 +94,20 @@ public class DBConnector {
 			query += "AND (project.language = '' OR project.language is null) ";
 		}
 		if(experimentEntered != null && experimentEntered.length()>0){
-			query += "AND (SELECT COUNT(*) FROM experiment WHERE experiment.content='"+experimentEntered+"' AND experiment.image_id=theid)>0 ";
+			query += "AND experiment.content='"+experimentEntered+"' ";
 		}
 		if(corruptEntered==1){
 			query += "AND image.is_bad = 1 ";
 		}
-		if(howManyTracersEntered==1){
-			query += "AND (SELECT COUNT(*) FROM image JOIN trace ON image.id=trace.image_id WHERE image.id = theid)=0 ";
-		}
-		else if(howManyTracersEntered==2){
-			query += "AND (SELECT COUNT(*) FROM image JOIN trace ON image.id=trace.image_id WHERE image.id = theid)=1 ";
-		}
-		else if(howManyTracersEntered==3){
-			query += "AND (SELECT COUNT(*) FROM image JOIN trace ON image.id=trace.image_id WHERE image.id = theid)=2 ";
+		if(howManyTracersEntered>0 && howManyTracersEntered<4){
+			int actualRequiredNumber = howManyTracersEntered-1;
+			query += "AND image.trace_count="+actualRequiredNumber+" ";
 		}
 		else if(howManyTracersEntered==4){
-			query += "AND (SELECT COUNT(*) FROM image JOIN trace ON image.id=trace.image_id WHERE image.id = theid)>2 ";
+			query += "AND image.trace_count>2 ";
 		}
 		if(tag != null && tag.length()>0){
-			query += "AND (SELECT COUNT(*) FROM tag WHERE tag.content='"+tag+"' AND tag.image_id=theid)>0 "; 
+			query += "AND tag.content='"+tag+"' "; 
 		}
 		if(wordEntered != null && wordEntered.length()>0){
 			query += "AND theid IN (SELECT image.id FROM image JOIN word ON image.word_id=word.id WHERE word.spelling='"+wordEntered+"') "; 
@@ -120,18 +124,19 @@ public class DBConnector {
 			query += "LIMIT "+MainFrame.fetchLimit;
 		}
 		query += ";";
-		
+//		System.out.println(query);
 		Statement stat = conn.createStatement();
 		long t_beforeQuery = System.currentTimeMillis();
 		ResultSet rs = stat.executeQuery(query);
 		long t_med = System.currentTimeMillis();
-		System.out.println("Query time: "+(t_med-t_beforeQuery));
+//		System.out.println("Query time: "+(t_med-t_beforeQuery));
 		HashSet<Integer> segmentIDs = null;
 		if(segmentEntered.length()>0){
 			segmentIDs = findSegmentIDs(segmentEntered);
 		}
 		int lastVideoID = 0;
 		ImageData image = new ImageData();
+		int prevSegId = -1;
 		while(rs.next()){
 			image = new ImageData();
 			image.id = rs.getString("theid");
@@ -153,16 +158,13 @@ public class DBConnector {
 				if(!segmentIDs.contains(segid)){
 					continue;
 				}
-				result.add(image);
 			}
-			else{
-				result.add(image);
+			if(image.segment_id!=prevSegId && marginSizeAfter==0 && prevSegId!=-1){
+				result.get(result.size()-1).isLastInSet = true;
 			}
+			prevSegId = image.segment_id;
+			result.add(image);
 		}
-
-		
-		long t_med2 = System.currentTimeMillis();
-//		System.out.println("First While: "+(t_med2-t_med));
 		//If we are limiting, we want to know the actual number of results too.
 		if(weAreLimiting){
 			int orderIndex = query.indexOf("ORDER BY");
@@ -219,7 +221,7 @@ public class DBConnector {
 		}
 		refinedResult = new ArrayList<ImageData>();
 		String lastTitle = null;
-		//We may want the marginal frames too:
+		//We may want the peripheral frames too:
 		if( segmentEntered.length()>0 && (marginSizeBefore>0 || marginSizeAfter>0) ){
 			int lastSegmentID = -1;
 			for(int i=0; i<result.size(); i++){
@@ -242,14 +244,12 @@ public class DBConnector {
 			result = refinedResult;
 		}
 		//Add the ending peripherals for the last frame set
-		if(marginSizeAfter!=null && marginSizeAfter>0){			
+		if(marginSizeAfter!=null && marginSizeAfter>0 && result.size()>0){			
 			addPeripheralImageToResult(result,lastVideoID, lastTitle,marginSizeAfter);
 		}
-		
-		
 		stat.close();
 		long t2 = System.currentTimeMillis();
-		System.out.println("Time: "+(t2-t1));
+//		System.out.println("Time: "+(t2-t1));
 		if(!weAreLimiting){
 			MainFrame.resultSize = result.size();
 		}
@@ -257,15 +257,18 @@ public class DBConnector {
 	}
 
 	private String findTargetSegment(String input) {
-		if(input.contains("[") && input.contains("]")){
+		//Gets an input segment search string like "$ a [r] ch m" and reutrns "r" as the segment that is the main target
+		//of the search
+		
+		if(input.matches(".*\\[\\w+\\].*")){
 			String result = input.replaceAll(".*\\[(.*)\\].*", "$1");
 			return result;
 		}
 		else{
-			if(input.contains(" ")){
-				return "";
+			if(input.matches("^(\\W)*(\\w)+(\\W)*$")){
+				return input.replaceAll("\\W", "");
 			}
-			return input;
+			return "";
 		}
 	}
 
@@ -325,6 +328,7 @@ public class DBConnector {
 			image.subject = rs.getString("subject");
 			image.project = rs.getString("project_title");
 			image.address = rs.getString("address");
+			image.isPeripheral = true;
 			result.add(image);
 		}
 		stat.close();
@@ -354,6 +358,7 @@ public class DBConnector {
 		}
 		searchTerm = searchTerm.replace("(", "");
 		searchTerm = searchTerm.replace(")", "");
+		searchTerm = searchTerm.trim();
 		String query1 = "";
 		if(!hasPrefix && !hasSuffix){
 			query1 = "SELECT segment_sequence,segment_id_sequence FROM word WHERE segment_sequence = '"+searchTerm+"'";
@@ -368,7 +373,7 @@ public class DBConnector {
 			//If it had to be like %searchTerm%:
 			query1 = "SELECT segment_sequence,segment_id_sequence FROM word WHERE segment_sequence LIKE '% "+searchTerm+" %' OR segment_sequence LIKE '% "+searchTerm+"' or segment_sequence LIKE '"+searchTerm+" %' or segment_sequence LIKE '"+searchTerm+"'";
 		}
-//		System.out.println(query1);
+//		System.out.println("***"+query1);
 		ResultSet rs = stat.executeQuery(query1);
 		//For each word that has such a pattern:
 		HashSet<Integer> resultIDs = new HashSet<Integer>();
@@ -382,18 +387,25 @@ public class DBConnector {
 				st2 = "^"+st2.substring(1);
 			}
 			if(!st2.contains("(")){
-				st2 = "("+st2+")";
+				st2 = st2.replaceAll("(\\w+)", "\\($1\\)");
 			}
 			int openBracketIndex = st2.indexOf("(");
 			int closedBracketIndex = st2.indexOf(")");
 			st2 = "("+st2.substring(0,openBracketIndex)+")"+st2.substring(openBracketIndex,closedBracketIndex+1)+"("+st2.substring(closedBracketIndex+1)+")";
 			// st2 = ($a )(r)( o) 
-			st2 = st2.replace("%", ".+");
+			st2 = st2.replaceAll("\\%", "\\.\\+");
+			//Replace "(^ )" with "^"
+			st2 = st2.replaceAll("\\(\\^ \\)", "\\^()");
+			//Replace "( $)" with "$"
+			st2 = st2.replaceAll("\\(\\ $\\)", "\\()$");
 			segments = segments.replaceAll(st2, "$1($2)$3");
 			// segments = m a (r) o n 0 z
-			
 			//Since we don't want "sh" when we search for "s":
-			if(segments.matches(".*\\w[()]\\w.*")){
+			//(c) m (c)h ea r V		$1:"(c) m "		$2:"("		$3:"c"		$4:")"		$5:"h ea r V" 
+			segments = segments.replaceAll("(.*)(\\()(\\w)(\\))(\\w.*)", "$1$3$5");
+			//Similarly:
+			segments = segments.replaceAll("(.*\\w)(\\()(\\w)(\\))(.*)", "$1$3$5");
+			if(!segments.matches(".*\\(.+\\).*")){
 				continue;
 			}
 			//
@@ -523,7 +535,7 @@ public class DBConnector {
 		return result;
 	}
 	
-	public void addImages(HashMap<String, ImageData> images, ArrayList<Trace> traces, String projectName, String projectAddress, String videoName, String videoAddress, String language, boolean updateMode) throws Exception{
+	public void addImages(HashMap<String, ImageData> images, ArrayList<Trace> traces, String projectName, String projectAddress, String videoName, String videoAddress, String language, String subj, boolean updateMode) throws Exception{
 		Statement stat = conn.createStatement();
 		int projectID = -1;
 		String query = "SELECT id FROM project WHERE title='"+projectName+"';";
@@ -542,8 +554,7 @@ public class DBConnector {
 			projectID = rs.getInt(1);
 		}
 		//The project is taken care of. Now add the video.
-		int underscoreIndex = videoName.indexOf("_");
-		String subject = videoName.substring(0, underscoreIndex-1); 
+		String subject = subj; 
 		Statement stat3 = conn.createStatement();
 		int videoID = -1;
 		if(updateMode){
@@ -572,7 +583,7 @@ public class DBConnector {
 				}
 			}
 			if("-1".equals(image.id)){
-				String query4 = "INSERT INTO image(video_id, title, address, sorting_code) VALUES("+videoID+",'"+image.title+"','"+image.address+"','"+(projectName+videoName+image.title)+"');";
+				String query4 = "INSERT INTO image(video_id, title, address, sorting_code, trace_count) VALUES("+videoID+",'"+image.title+"','"+image.address+"','"+(projectName+videoName+image.title)+"', 0);";
 				stat4.executeUpdate(query4);
 				//Save the db id of the image we just added. We need it when associating trace files with images in the next loop
 				ResultSet rs5 = stat4.getGeneratedKeys();
@@ -612,7 +623,7 @@ public class DBConnector {
 			}
 		}
 		
-		//Because db queries are time-consuming we batch trace files of the same tracer together, so that we
+		//Because db queries are time-consuming. we batch trace files of the same tracer together, so that we
 		//we won't need to check the id of the tracer every time.
 		for(int i=1; i<tracerNames.length; i++){
 			String query5 = "SELECT id FROM tracer WHERE first_name='"+tracerNames[i]+"';";
@@ -623,8 +634,8 @@ public class DBConnector {
 				if(trace.tracer.equals(tracerNames[i])){
 					ImageData image = images.get(trace.imageName);
 					if(image==null){
-						System.err.println("The image and trace names do not match");
-						throw new Exception();
+						MainFrame.printErrorLog("Unmatched trace file: "+trace.imageName);
+						continue;
 					}
 					boolean traceFileExists = false;
 					if(updateMode){
@@ -643,6 +654,14 @@ public class DBConnector {
 							String query8 = "UPDATE image SET autotraced=1 WHERE id="+image.id+";";
 							stat.executeUpdate(query8);
 						}
+						//Also increment the number of traces for the corresponding image
+						String query8 = "SELECT trace_count FROM image WHERE id='"+image.id+"';";
+						ResultSet rsb = stat.executeQuery(query8);
+						rsb.next();
+						int traceCount = rsb.getInt(1);
+						traceCount++;
+						String query9 = "UPDATE image SET trace_count='"+traceCount+"' WHERE id='"+image.id+"'";
+						stat.execute(query9);
 					}
 				}
 			}
@@ -875,7 +894,7 @@ public class DBConnector {
 
 	public int addSegment(String text) throws SQLException {
 		Statement stat = conn.createStatement();
-		String update = "INSERT INTO segment(spelling, detailed_spelling) VALUES('"+Updater.getSegmentSpelling(text)+"','"+text+"');";
+		String update = "INSERT INTO segment(spelling, detailed_spelling) VALUES('"+TextGridReader.getSegmentSpelling(text)+"','"+text+"');";
 		stat.executeUpdate(update);
 		ResultSet rs = stat.getGeneratedKeys();
 		int id = -1;
@@ -945,33 +964,58 @@ public class DBConnector {
 		String deleteProject= "DELETE FROM project WHERE project.title='"+title+"';";
 		
 		stat.execute(deleteTags);
-		System.out.println("Done deleteTags");
 		stat.execute(deleteExps);
-		System.out.println("Done deleteExps");
 		stat.execute(deleteWords);
-		System.out.println("Done deleteWords");
 		stat.execute(deleteWordsStart);
-		System.out.println("Done deleteWordsStart");
 		stat.execute(deleteWordsEnd);
-		System.out.println("Done deleteWordsEnd");
 		stat.execute(deleteSegments);
-		System.out.println("Done deleteSegments");
 		stat.execute(deleteSegmentsStart);
-		System.out.println("Done deleteSegmentsStart");
 		stat.execute(deleteSegmentsEnd);
-		System.out.println("Done deleteSegmentsEnd");
 		stat.execute(deleteTraces);
-		System.out.println("Done deleteTraces");
 		stat.execute(deleteTracers);
-		System.out.println("Done deleteTracers");
 		stat.execute(deleteImages);
-		System.out.println("Done deleteImages");
 		stat.execute(deleteVideos);
-		System.out.println("Done deleteVideos");
 		stat.execute(deleteProject);
-		System.out.println("Done deleteProject");
 		
 		stat.close();
+	}
+
+	public void setCAPWarningOn() throws SQLException {
+		Statement stat = conn.createStatement();
+		String command = "UPDATE settings SET value='0' WHERE parameter='showCAPWarning'";
+		stat.execute(command);
+		stat.close();
+	}
+	
+	public boolean isCAPWarningOn() throws SQLException {
+		Statement stat = conn.createStatement();
+		String command = "SELECT value FROM settings WHERE parameter='showCAPWarning'";
+		ResultSet rs = stat.executeQuery(command);
+		rs.next();
+		String result = rs.getString(1);
+		stat.close();
+		if(result.equals("1")){
+			stat.close();
+			return true;
+		}
+		else{
+			if(!result.equals("0")){
+				System.err.println("Settings value is neither 1 nor 0!");
+			}
+			stat.close();
+			return false;
+		}
+	}
+
+	public String getAudioAddressForVideoID(String id) throws SQLException {
+		Statement stat = conn.createStatement();
+		System.out.println(id);
+		String command = "SELECT audio_address FROM video WHERE id="+id+";";
+		ResultSet rs = stat.executeQuery(command);
+		rs.next();
+		String result = rs.getString(1);
+		stat.close();
+		return result;
 	}
 	
 }

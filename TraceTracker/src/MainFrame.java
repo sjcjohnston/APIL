@@ -1,5 +1,6 @@
 import javax.swing.BorderFactory;
 import javax.swing.ButtonGroup;
+import javax.swing.JCheckBox;
 import javax.swing.JCheckBoxMenuItem;
 import javax.swing.JComponent;
 import javax.swing.JFrame;
@@ -11,6 +12,7 @@ import javax.swing.JPanel;
 import javax.swing.JPopupMenu;
 import javax.swing.JRadioButtonMenuItem;
 import javax.swing.JTable;
+import javax.swing.ListSelectionModel;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.table.AbstractTableModel;
@@ -20,8 +22,10 @@ import javax.swing.JLabel;
 import javax.swing.border.LineBorder;
 import java.awt.Color;
 import java.awt.Component;
+import java.awt.Robot;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
+import java.awt.event.KeyEvent;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseListener;
 import java.io.BufferedWriter;
@@ -38,8 +42,6 @@ import java.util.Calendar;
 import javax.swing.border.EtchedBorder;
 import javax.swing.JScrollPane;
 import javax.swing.JMenuBar;
-
-import com.sun.tools.javac.tree.JCTree.JCMethodInvocation;
 
 
 @SuppressWarnings("serial")
@@ -74,6 +76,7 @@ public class MainFrame extends JFrame{
 	public ArrayList<String> columnNames;
 	
 	public MainFrame() {
+		setTitle("TraceTracker");
 		columnNames = new ArrayList<String>(Arrays.asList(columnNamesList));
 		fetchLimit = 10000;
 		getBackup();
@@ -164,12 +167,24 @@ public class MainFrame extends JFrame{
 		        Component comp = super.prepareRenderer(renderer, index_row, index_col);
 		        JComponent jc = (JComponent) comp;
 		        int index = (currentPage-1)*pageLength+index_row;
+		        int modelRow=convertRowIndexToModel(index_row);
 				if(tableData == null || tableData.size()<index+1){
 					return jc;
 				}
 				ImageData image = tableData.get(index);
 				if(image !=null && image.isLastInSet){					
 					jc.setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0,Color.decode("#aabbff")));
+				}
+				if(isRowSelected(modelRow)){
+					return jc;
+				}
+				if(image.isPeripheral){
+					jc.setBackground(Color.decode("#eeeeee"));
+					jc.setForeground(Color.GRAY);
+				}
+				else{
+					jc.setBackground(Color.WHITE);
+					jc.setForeground(Color.BLACK);
 				}
 		        return jc;
 		    }
@@ -191,7 +206,17 @@ public class MainFrame extends JFrame{
 			JMenuItem untagItem;
 			JMenuItem addExpItem;
 			JMenuItem removeExpItem;
-		    public PopUpMenu(){
+			JMenuItem praatItem;
+		    public PopUpMenu(boolean showPraatOption){
+		    	praatItem = new JMenuItem("Show selected images in UltraPraat");
+		    	praatItem.addActionListener(new ActionListener() {
+					
+					@Override
+					public void actionPerformed(ActionEvent e) {
+						showPraat();
+					}
+				});
+		    	
 		        tagItem = new JMenuItem("Tag selected images");
 		        tagItem.addActionListener(new ActionListener() {
 					
@@ -224,6 +249,9 @@ public class MainFrame extends JFrame{
 						bufferPanel.untag(true, true);
 					}
 				});
+		        if(showPraatOption){
+		        	add(praatItem);
+		        }
 		        add(tagItem);
 		        add(untagItem);
 		        add(addExpItem);
@@ -251,7 +279,7 @@ public class MainFrame extends JFrame{
 			@Override
 			public void mouseClicked(MouseEvent e) {
 				if (SwingUtilities.isRightMouseButton(e)){
-					PopUpMenu p = new PopUpMenu();
+					PopUpMenu p = new PopUpMenu(true);
 					p.show(e.getComponent(),e.getX(), e.getY());
 				}
 			}
@@ -284,6 +312,17 @@ public class MainFrame extends JFrame{
 		getContentPane().add(btnSearch);
 		getRootPane().setDefaultButton(btnSearch);
 		
+		JButton btnClear = new JButton("Clear");
+		btnClear.setBounds(16, 142, 117, 29);
+		getContentPane().add(btnClear);
+		btnClear.addActionListener(new ActionListener() {
+			
+			@Override
+			public void actionPerformed(ActionEvent e) {
+				searchbox.clearAllFields();
+			}
+		});
+		
 		JMenuBar menuBar = new JMenuBar();
 		setJMenuBar(menuBar);
 		JMenu collectMenu = new JMenu("Export");
@@ -296,8 +335,11 @@ public class MainFrame extends JFrame{
 		menuBar.add(updateMenu);
 		menuBar.add(deleteMenu);
 		menuBar.add(viewMenu);
-		JMenuItem addProject = new JMenuItem("Add new project...");
-		addProject.addActionListener(new ActionListener() {
+		
+		JMenu addProject = new JMenu("Add project");
+		
+		JMenuItem addStandardProject = new JMenuItem("Add new project...");
+		addStandardProject.addActionListener(new ActionListener() {
 			
 			@Override
 			public void actionPerformed(ActionEvent e) {
@@ -305,9 +347,43 @@ public class MainFrame extends JFrame{
 				updater.updateDB("addProject");
 			}
 		});
+		JMenuItem addCustomProject = new JMenuItem("Add custom project...");
+		addCustomProject.addActionListener(new ActionListener() {
+			
+			@Override
+			public void actionPerformed(ActionEvent e) {
+				JCheckBox checkBox = new JCheckBox("Don't show this message again");
+				checkBox.getFont().deriveFont(8);
+				boolean mustWarn = false;
+				try {
+					mustWarn = db.isCAPWarningOn();
+				} catch (SQLException e2) {
+					e2.printStackTrace();
+					printErrorLog(e2);
+				}
+				if(mustWarn){
+					Object[] params = {"Please make sure all image frames for each recording\nare stored in a separate folder before proceeding.", checkBox};
+					JOptionPane.showMessageDialog(null,params);
+				}
+				if(checkBox.isSelected()){
+					try {
+						db.setCAPWarningOn();
+					} catch (SQLException e1) {
+						// TODO Auto-generated catch block
+						e1.printStackTrace();
+						printErrorLog(e1);
+					}
+				}
+				CustomAddProjectFrame customAddProjFrame = new CustomAddProjectFrame(MainFrame.this);
+				customAddProjFrame.setBounds(500, 200, 555, 462);
+				customAddProjFrame.setVisible(true);
+			}
+		});
+		addProject.add(addStandardProject);
+		addProject.add(addCustomProject);
 		updateMenu.add(addProject);
-		JMenuItem updateProject = new JMenuItem("Update existing project...");
-		updateProject.addActionListener(new ActionListener() {
+		JMenuItem updateStandardProject = new JMenuItem("Update existing standard project...");
+		updateStandardProject.addActionListener(new ActionListener() {
 			
 			@Override
 			public void actionPerformed(ActionEvent e) {
@@ -315,7 +391,7 @@ public class MainFrame extends JFrame{
 				updater.updateDB("updateProject");
 			}
 		});
-		updateMenu.add(updateProject);
+		updateMenu.add(updateStandardProject);
 		JMenuItem collectImages = new JMenuItem("Export buffer images...");
 		collectImages.addActionListener(new ActionListener() {
 			
@@ -524,7 +600,17 @@ public class MainFrame extends JFrame{
 		((AbstractTableModel) table.getModel()).fireTableDataChanged();
 	}
 	
-	public void printErrorLog(Exception e){
+	public void showPraat(){
+		//We will find the index of the first selected image only. Then send this image to PraatConnector
+		int[] selectedIndices = table.getSelectedRows();
+		int firstIndex = selectedIndices[0];
+		int realIndex = (currentPage-1)*pageLength+firstIndex;
+		ImageData image = tableData.get(realIndex);
+		PraatConnector pc = new PraatConnector(image, this);
+		pc.run();		
+	}
+	
+	public static void printErrorLog(Exception e){
 		StringWriter sw = new StringWriter();
 		PrintWriter pw = new PrintWriter(sw);
 		e.printStackTrace(pw);
@@ -534,6 +620,20 @@ public class MainFrame extends JFrame{
 			String timeStamp = new SimpleDateFormat("MM-dd-yyyy HH:mm:ss").format(Calendar.getInstance().getTime());
 			out.print(timeStamp+"\n");
 			out.print(error);
+			out.println("------------------------------------------------------------\n");
+			out.close();
+		} catch (Exception e1) {
+			System.err.println("begandad namak");
+			e1.printStackTrace();
+		}
+	}
+	
+	public static void printErrorLog(String s){
+		try {
+			PrintWriter out = new PrintWriter(new BufferedWriter(new FileWriter("error log.txt", true)));
+			String timeStamp = new SimpleDateFormat("MM-dd-yyyy HH:mm:ss").format(Calendar.getInstance().getTime());
+			out.print(timeStamp+"\n");
+			out.print(s);
 			out.println("------------------------------------------------------------\n");
 			out.close();
 		} catch (Exception e1) {
@@ -625,6 +725,7 @@ public class MainFrame extends JFrame{
 			return " ";
 		}
 		
+		@SuppressWarnings({ "rawtypes", "unchecked" })
 		public Class getColumnClass(int c) {
 			return "salam".getClass();	
 		}
